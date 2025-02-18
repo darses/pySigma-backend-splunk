@@ -1,6 +1,6 @@
 import re
 from sigma.conversion.state import ConversionState
-from sigma.modifiers import SigmaRegularExpression
+from sigma.types import SigmaRegularExpression
 from sigma.rule import SigmaRule, SigmaDetection
 from sigma.conversion.base import TextQueryBackend, DeferredQueryExpression
 from sigma.conversion.deferred import DeferredTextQueryExpression
@@ -18,6 +18,12 @@ from sigma.pipelines.splunk.splunk import (
     splunk_windows_registry_cim_mapping,
     splunk_windows_file_event_cim_mapping,
     splunk_web_proxy_cim_mapping,
+    splunk_dns_cim_mapping,
+    splunk_network_traffic_cim_mapping,
+    splunk_authentication_cim_mapping,
+    splunk_email_cim_mapping,
+    splunk_ids_cim_mapping,
+    splunk_windows_process_access_cim_mapping,
 )
 import sigma
 from typing import Any, Callable, ClassVar, Dict, List, Optional, Pattern, Tuple, Union
@@ -44,10 +50,8 @@ class SplunkDeferredORRegularExpression(DeferredTextQueryExpression):
         self.add_field(field)
         field_condition = self.get_field_condition(field)
         field_match = self.get_field_match(field)
-        self.template = 'rex field={{field}} "(?<{field_match}>{{value}})"\n| eval {field_condition}=if(isnotnull({field_match}), "true", "false")'.format(
-            field_match=field_match, field_condition=field_condition
-        )
-        return super().__init__(state, field, arg)
+        self.template = f'rex field={{field}} "(?<{field_match}>{{value}})"\n| eval {field_condition}=if(isnotnull({field_match}), "true", "false")'
+        super().__init__(state, field, arg)
 
     @staticmethod
     def clean_field(field):
@@ -174,9 +178,7 @@ class SplunkBackend(TextQueryBackend):
         # "transaction": "Correlation using transaction command (less efficient, sliding time window",
     }
     default_correlation_method: ClassVar[str] = "stats"
-    default_correlation_query: ClassVar[str] = {
-        "stats": "{search}\n\n{aggregate}\n\n{condition}"
-    }
+    default_correlation_query: ClassVar[str] = "{search}\n\n{aggregate}\n\n{condition}"
 
     correlation_search_single_rule_expression: ClassVar[str] = "{query}"
     correlation_search_multi_rule_expression: ClassVar[str] = "| multisearch\n{queries}"
@@ -268,7 +270,11 @@ class SplunkBackend(TextQueryBackend):
                 SigmaString("true"),
             )
             # returning fieldX=true
-            return super().convert_condition_field_eq_val_str(cond_true, state)
+            return SplunkDeferredRegularExpression(
+                state, 
+                cond.field, 
+                str(super().convert_condition_field_eq_val_str(cond_true, state))
+            )
         return SplunkDeferredRegularExpression(
             state, cond.field, super().convert_condition_field_eq_val_re(cond, state)
         ).postprocess(None, cond)
@@ -321,7 +327,7 @@ class SplunkBackend(TextQueryBackend):
                     self.deferred_start
                     + self.deferred_separator.join(deferred_regex_or_expressions)
                     + "\n| search "
-                    + query,
+                    + str(query),
                     index,
                     state,
                     output_format,
@@ -369,10 +375,20 @@ class SplunkBackend(TextQueryBackend):
             if rule.logsource.product == "windows":
                 if rule.logsource.category == "process_creation":
                     data_model = "Endpoint"
-                    data_set = "Processes"
-                    cim_fields = " ".join(
-                        splunk_sysmon_process_creation_cim_mapping.values()
-                    )
+                    if rule.logsource.category == "process_creation":
+                        data_set = "Processes"
+                        cim_fields = (
+                            " ".join(splunk_sysmon_process_creation_cim_mapping)
+                            if isinstance(splunk_sysmon_process_creation_cim_mapping, list)
+                            else " ".join(str(value) for value in splunk_sysmon_process_creation_cim_mapping.values())
+                        )
+                    elif rule.logsource.category == "process_access":
+                        data_set = "Processes"
+                        cim_fields = (
+                            " ".join(splunk_windows_process_access_cim_mapping)
+                            if isinstance(splunk_windows_process_access_cim_mapping, list)
+                            else " ".join(str(value) for value in splunk_windows_process_access_cim_mapping.values())
+                        )
                 elif rule.logsource.category in [
                     "registry_add",
                     "registry_delete",
@@ -381,25 +397,78 @@ class SplunkBackend(TextQueryBackend):
                 ]:
                     data_model = "Endpoint"
                     data_set = "Registry"
-                    cim_fields = " ".join(splunk_windows_registry_cim_mapping.values())
+                    cim_fields = (
+                        " ".join(splunk_windows_registry_cim_mapping)
+                        if isinstance(splunk_windows_registry_cim_mapping, list)
+                        else " ".join(str(value) for value in splunk_windows_registry_cim_mapping.values())
+                    )
                 elif rule.logsource.category == "file_event":
                     data_model = "Endpoint"
                     data_set = "Filesystem"
-                    cim_fields = " ".join(
-                        splunk_windows_file_event_cim_mapping.values()
+                    cim_fields = (
+                        " ".join(splunk_windows_file_event_cim_mapping)
+                        if isinstance(splunk_windows_file_event_cim_mapping, list)
+                        else " ".join(str(value) for value in splunk_windows_file_event_cim_mapping.values())
                     )
             elif rule.logsource.product == "linux":
                 if rule.logsource.category == "process_creation":
                     data_model = "Endpoint"
                     data_set = "Processes"
-                    cim_fields = " ".join(
-                        splunk_sysmon_process_creation_cim_mapping.values()
+                    cim_fields = (
+                        " ".join(splunk_sysmon_process_creation_cim_mapping)
+                        if isinstance(splunk_sysmon_process_creation_cim_mapping, list)
+                        else " ".join(str(value) for value in splunk_sysmon_process_creation_cim_mapping.values())
                     )
 
         elif rule.logsource.category == "proxy":
             data_model = "Web"
             data_set = "Proxy"
-            cim_fields = " ".join(splunk_web_proxy_cim_mapping.values())
+            cim_fields = (
+                " ".join(splunk_web_proxy_cim_mapping)
+                if isinstance(splunk_web_proxy_cim_mapping, list)
+                else " ".join(str(value) for value in splunk_web_proxy_cim_mapping.values())
+            )
+        elif rule.logsource.category == "dns":
+            data_model = "Network_Resolution"
+            data_set = "DNS"
+            cim_fields = (
+                " ".join(splunk_dns_cim_mapping)
+                if isinstance(splunk_dns_cim_mapping, list)
+                else " ".join(str(value) for value in splunk_dns_cim_mapping.values())
+            )
+        elif rule.logsource.category == "network_connection":
+            data_model = "Network_Traffic"
+            data_set = "All_Traffic"
+            cim_fields = (
+                " ".join(splunk_network_traffic_cim_mapping)
+                if isinstance(splunk_network_traffic_cim_mapping, list)
+                else " ".join(str(value) for value in splunk_network_traffic_cim_mapping.values())
+            )
+        elif rule.logsource.category == "authentication":
+            data_model = "Authentication"
+            data_set = "Authentication"
+            cim_fields = (
+                " ".join(splunk_authentication_cim_mapping)
+                if isinstance(splunk_authentication_cim_mapping, list)
+                else " ".join(str(value) for value in splunk_authentication_cim_mapping.values())
+            )
+        elif rule.logsource.category == "email":
+            data_model = "Email"
+            data_set = "Email"
+            cim_fields = (
+                " ".join(splunk_email_cim_mapping)
+                if isinstance(splunk_email_cim_mapping, list)
+                else " ".join(str(value) for value in splunk_email_cim_mapping.values())
+            )
+        elif rule.logsource.category == "ids":
+            data_model = "Intrusion_Detection"
+            data_set = "IDS"
+            cim_fields = (
+                " ".join(splunk_ids_cim_mapping)
+                if isinstance(splunk_ids_cim_mapping, list)
+                else " ".join(str(value) for value in splunk_ids_cim_mapping.values())
+            )
+
 
         try:
             data_model_set = state.processing_state["data_model_set"]

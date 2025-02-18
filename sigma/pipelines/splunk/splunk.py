@@ -159,13 +159,39 @@ splunk_email_cim_mapping: Dict[str, str | List[str]] = {
     "direction": "Email.direction"
 }
 
+splunk_windows_process_access_cim_mapping: Dict[str, str | List[str]] = {
+    "SourceProcessGUID": "Processes.process_guid",
+    "SourceProcessId": "Processes.process_id",
+    "SourceImage": "Processes.process_path",
+    "TargetProcessGUID": "Processes.target_process_guid",
+    "TargetProcessId": "Processes.target_process_id",
+    "TargetImage": "Processes.target_process_path",
+    "GrantedAccess": "Processes.granted_access",
+    "CallTrace": "Processes.call_trace",
+    "Computer": "Processes.dest",
+    "User": "Processes.user",
+    "Provider_Name": "Processes.provider_name",
+    "SourceUser": "Processes.user"
+}
+
 def splunk_windows_pipeline():
     return ProcessingPipeline(
         name="Splunk Windows log source conditions",
         allowed_backends=frozenset(["splunk"]),
         priority=20,
-        items=generate_windows_logsource_items("source", "WinEventLog:{source}")
-        + [
+        items=[
+            ProcessingItem(     # Field mapping for converting SourceUser to User
+                identifier="splunk_windows_source_user_mapping",
+                transformation=FieldMappingTransformation({
+                    "SourceUser": "User",
+                }),
+                rule_conditions=[
+                    LogsourceCondition(
+                        category="process_access",
+                        product="windows"
+                    )
+                ]
+            ),
             ProcessingItem(  # Field mappings
                 identifier="splunk_windows_field_mapping",
                 transformation=FieldMappingTransformation(
@@ -613,6 +639,48 @@ def splunk_cim_data_model():
                 ],
             ),
             ProcessingItem(
+                identifier="splunk_dm_mapping_process_access_unsupported_fields",
+                transformation=DetectionItemFailureTransformation(
+                    "The Splunk Data Model Sigma backend supports only the following fields for process_access log source: "
+                    + ",".join(list(splunk_windows_process_access_cim_mapping.keys()))
+                ),
+                rule_conditions=[
+                    LogsourceCondition(category="process_access", product="windows"),
+                ],
+                field_name_conditions=[
+                    ExcludeFieldCondition(
+                        fields=list(splunk_windows_process_access_cim_mapping.keys())
+                    )
+                ],
+            ),
+            ProcessingItem(
+                identifier="splunk_dm_mapping_process_access",
+                transformation=FieldMappingTransformation(
+                    splunk_windows_process_access_cim_mapping
+                ),
+                rule_conditions=[
+                    LogsourceCondition(category="process_access", product="windows"),
+                ],
+            ),
+            ProcessingItem(
+                identifier="splunk_dm_fields_process_access",
+                transformation=SetStateTransformation(
+                    "fields", splunk_windows_process_access_cim_mapping.values()
+                ),
+                rule_conditions=[
+                    LogsourceCondition(category="process_access", product="windows"),
+                ],
+            ),
+            ProcessingItem(
+                identifier="splunk_dm_process_access_data_model_set",
+                transformation=SetStateTransformation(
+                    "data_model_set", "Endpoint.Processes"
+                ),
+                rule_conditions=[
+                    LogsourceCondition(category="process_access", product="windows"),
+                ],
+            ),
+            ProcessingItem(
                 identifier="splunk_dm_mapping_log_source_not_supported",
                 rule_condition_linking=any,
                 transformation=RuleFailureTransformation(
@@ -646,6 +714,9 @@ def splunk_cim_data_model():
                     ),
                     RuleProcessingItemAppliedCondition(
                         "splunk_dm_mapping_email"
+                    ),
+                    RuleProcessingItemAppliedCondition(
+                        "splunk_dm_mapping_process_access"
                     ),
                 ],
             ),
